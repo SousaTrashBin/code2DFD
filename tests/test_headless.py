@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from maze_headless import analyze
+from maze_headless import apply_bindings
 
 
 def service(root, name, framework='quarkus'):
@@ -36,6 +37,52 @@ def client(directory, attributes='configKey="peer"'):
 
 
 class HeadlessTests(unittest.TestCase):
+    def test_explicit_context_overrides_defaults_for_spring_and_quarkus(self):
+        for framework in ('spring', 'quarkus'):
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                consumer = service(root, 'consumer', framework)
+                service(root, 'provider')
+                if framework == 'quarkus':
+                    client(consumer)
+                else:
+                    (consumer / 'src/main/java/Peer.java').write_text(
+                        'package example;\nimport org.springframework.cloud.openfeign.FeignClient;\n'
+                        '@FeignClient(name="provider")\npublic interface Peer {}\n')
+                evidence = {'schema_version': 1, 'context_fingerprint': 'a' * 64,
+                            'service_roots': ['consumer', 'provider'], 'bindings': [{
+                                'source_root': 'consumer', 'destination_root': 'provider',
+                                'file': 'consumer/src/main/java/Peer.java', 'line': 3,
+                                'destination_kind': 'internal', 'resolution_detail': 'Selected binding.'}]}
+                result = analyze(root, evidence)
+                flows = [f for f in result['flows'] if 'restful_http' in f['stereotypes']]
+                self.assertEqual(len(flows), 1)
+                self.assertEqual(flows[0]['receiver'], 'provider')
+                self.assertEqual(result['context_fingerprint'], 'a' * 64)
+                for status in ('external', 'unknown'):
+                    evidence['bindings'][0].update(destination_root=None, destination_kind=status)
+                    result = analyze(root, evidence)
+                    self.assertTrue(all(f['receiver'] is None for f in result['flows']
+                                        if 'restful_http' in f['stereotypes']))
+                    self.assertTrue(any(c['detail'] == 'Selected binding.'
+                                        for c in result['coverage']))
+
+    def test_explicit_binding_boundary_rejects_forged_locations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            consumer = service(root, 'consumer')
+            client(consumer)
+            evidence = {'schema_version': 1, 'context_fingerprint': 'a' * 64,
+                        'service_roots': ['consumer'], 'bindings': [{
+                            'source_root': 'consumer', 'destination_root': None,
+                            'file': 'consumer/src/main/java/Peer.java', 'line': 1,
+                            'destination_kind': 'unknown', 'resolution_detail': 'Unknown binding.'}]}
+            for file, line in (('../outside.java', 3), ('consumer/src/main/java/Peer.java', 1),
+                               ('consumer/src/main/java/Peer.java', True)):
+                evidence['bindings'][0].update(file=file, line=line)
+                with self.assertRaises(ValueError):
+                    apply_bindings(root, [{'root': 'consumer', 'name': 'consumer'}], [], [], evidence)
+
     def test_quarkus_and_spring_extraction_preserve_snapshot(self):
         with tempfile.TemporaryDirectory(prefix='code2dfd-latest-') as temporary:
             root = Path(temporary)
