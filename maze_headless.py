@@ -33,11 +33,12 @@ def location(trace, root):
     if '..' in path.parts or not (root / path).is_file():
         return None, None
     value = trace.get('line')
-    # Legacy grep evidence is a one-based string; parser indices are zero-based ints.
+    # Legacy grep evidence is a one-based string. Parser ints mix zero- and
+    # one-based conventions across modules; preserve the file with unknown line.
     if isinstance(value, str) and value.isdecimal():
         line = int(value)
     elif type(value) is int and value >= 0:
-        line = value + 1
+        return path.as_posix(), None
     else:
         return None, None
     return path.as_posix(), line
