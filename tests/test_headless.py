@@ -44,7 +44,8 @@ class HeadlessTests(unittest.TestCase):
                 consumer = service(root, 'consumer', framework)
                 service(root, 'provider')
                 if framework == 'quarkus':
-                    client(consumer)
+                    file = client(consumer)
+                    file.write_text(file.read_text().replace('@RegisterRestClient', '@jakarta.ws.rs.Path("/api")\n@RegisterRestClient'))
                 else:
                     (consumer / 'src/main/java/Peer.java').write_text(
                         'package example;\nimport org.springframework.cloud.openfeign.FeignClient;\n'

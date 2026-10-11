@@ -100,8 +100,11 @@ def apply_bindings(root, nodes, flows, coverage, evidence):
             raise ValueError('Binding file is not owned by selected source')
         code = JAVA_TOKEN.sub(lambda m: re.sub(r'[^\n]', ' ', m[0]),
                               uncomment((root / file).read_text())).splitlines()
-        if line > len(code) or not re.search(
-                r'@(?:[\w$]+\.)*(?:RegisterRestClient|FeignClient)\b', code[line - 1]):
+        declaration = re.match(
+            r'\s*(?P<annotations>(?:@[\w.$]+(?:\([^;{}]*?\))?\s*)+)'
+            r'(?:public\s+)?interface\s+[\w$]+\b', '\n'.join(code[line - 1:]))
+        if line > len(code) or declaration is None or not re.search(
+                r'@(?:[\w$]+\.)*(?:RegisterRestClient|FeignClient)\b', declaration['annotations']):
             raise ValueError('Binding does not identify an annotated source declaration')
         seen.add((file, line))
         if len(owners.get(source, [])) != 1:
