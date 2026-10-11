@@ -1,4 +1,5 @@
 import ast
+import re
 
 import core.file_interaction as fi
 import core.technology_switch as tech_sw
@@ -55,17 +56,16 @@ def set_information_flows(dfd) -> dict:
         target_service = False
         for line in results[id]["content"]:
             if "@FeignClient" in line:
-                if "name" in line:
-                    target_service = line.split("name")[1].split(",")[0].strip().strip("=)\"").strip()
-                elif "value" in line:
-                    target_service = line.split("value")[1].split(",")[0].strip().strip("=)\"").strip()
-                elif "," in line:
-                    target_service = line.split("FeignClient(")[1].split(",")[0].strip().strip(")").strip().strip("\"").strip()
+                name_attribute = re.search(r'\b(?:name|value)\s*=\s*"([^"\n]*)"', line)
+                implicit_name = re.search(r'@FeignClient\(\s*"([^"\n]*)"', line)
+                if name_attribute or implicit_name:
+                    target_service = (name_attribute or implicit_name)[1]
                 if not is_microservice(target_service, dfd):
                     target_service = False
-                if not target_service and "url" in line:
-                    target_url = line.split("url")[1].split("=")[1].split(",")[0].strip().strip("\"")
-                    target_service = fi.resolve_url(target_url, microservice, dfd)
+                url_attribute = re.search(r'\burl\s*=\s*"([^"\n]*)"', line)
+                if url_attribute:
+                    # Explicit URL controls routing even if a known logical name exists.
+                    target_service = fi.resolve_url(url_attribute[1], microservice, dfd)
 
                 if target_service:
                     for m in microservices.keys():

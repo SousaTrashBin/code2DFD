@@ -75,3 +75,32 @@ The DFDs rendered by CodeableModels do not follow standard DFD-notation.
 Note that this is ongoing work and the traceability is not created for all items as of now.
 However, we implemented it for enough items to show that this technique works and the full traceability is only a question of further implementation work.
 - Logs are saved in `code2DFD_output/logs/`.
+
+
+## MAZE headless integration (fork)
+
+This branch preserves Code2DFD's extraction and classification pipeline and adds a
+local, noninteractive JSON entry point. It performs no Git checkout, target build,
+application execution, endpoint call or diagram rendering. Output contains node
+and flow identities, structural/security stereotypes, source locations and coverage;
+configuration values, tagged-value contents and credentials are omitted.
+
+```sh
+uv sync --locked
+uv run --locked python maze_headless.py --target /path/to/source
+uv run --locked python -m unittest discover -s tests -v
+```
+
+The optional Quarkus extractor recognizes imported MicroProfile
+`@RegisterRestClient` interfaces with literal `configKey` or `baseUri` attributes.
+It supports explicit default `application.properties` URL/URI bindings in Quarkus
+and MicroProfile notation, including quoted fully qualified interface names.
+Conflicting, profile-dependent, dynamic and external destinations remain unresolved.
+It reports possible client dependencies, without proving invocation reachability
+or payload compatibility. YAML client binding and programmatic clients are not
+supported in this first extension.
+
+The fork also isolates optional legacy rendering/Git dependencies, replaces shell
+searches with portable snapshot traversal, fixes Feign attribute parsing and exact
+URL-host matching, and pins the headless Python dependencies in `uv.lock`.
+Original papers, authors and Apache-2.0 attribution remain applicable.

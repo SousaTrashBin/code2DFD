@@ -155,7 +155,7 @@ def parse_properties_file(pom_path: str):
         dir = dirs.pop()
         for entry in dir:
             if entry.is_file():
-                if not "test" in entry.path:
+                if not any(part in fi.IGNORED_DIRECTORIES for part in os.path.relpath(entry.path, local_repo_path).split(os.sep)):
                     filename = os.path.basename(entry.path)
                     if filename in ["application.properties", "bootstrap.properties"]:
                         logger.info("Found application.properties here: " + str(entry.path))
@@ -173,7 +173,7 @@ def parse_properties_file(pom_path: str):
                             microservice = new_microservice
                         if new_properties:
                             properties = properties.union(new_properties)
-            elif entry.is_dir():
+            elif entry.is_dir() and entry.name not in fi.IGNORED_DIRECTORIES:
                 dirs.append(os.scandir(entry.path))
 
     return microservice, properties

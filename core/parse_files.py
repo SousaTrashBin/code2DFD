@@ -35,9 +35,9 @@ class MyConstructor(ruamel.yaml.constructor.RoundTripConstructor):
                 "expected a scalar node, but found %s" % node.id,
                 node.start_mark)
 
-        if node.style == '|' and isinstance(node.value, ruamel.yaml.compat.text_type):
+        if node.style == '|' and isinstance(node.value, str):
             ret_val = MyPreservedScalarString(node.value)
-        elif bool(self._preserve_quotes) and isinstance(node.value, ruamel.yaml.compat.text_type):
+        elif bool(self._preserve_quotes) and isinstance(node.value, str):
             if node.style == "'":
                 ret_val = MySingleQuotedScalarString(node.value)
             elif node.style == '"':
@@ -68,7 +68,7 @@ def parse_properties_file(file_path: str) -> str:
     i = 0
     for line in file:
         # Servicename
-        if "spring.application.name" in line:
+        if "spring.application.name" in line or "quarkus.application.name" in line:
             if not "$" in line:
                 microservice[0] = line.split("=")[1].strip()
 
@@ -76,11 +76,11 @@ def parse_properties_file(file_path: str) -> str:
                 microservice[1] = create_trace(microservice[0], file_path, file, i)
 
         # Port
-        elif "server.port" in line:
+        elif "server.port" in line or "quarkus.http.port" in line:
             try:
                 port = int(line.split("=")[1].strip()) if "=" in line else None
                 if port:
-                    span = re.search("server.port", line).span()
+                    span = re.search(r"server\.port|quarkus\.http\.port", line).span()
                     trace = (file_path, i, span)
                     properties.add(("port", port, trace))
             except:

@@ -1,7 +1,7 @@
 import os
 import re
-import subprocess
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from output_generators.logger import logger
 import core.technology_switch as tech_sw
@@ -57,59 +57,51 @@ def extract_variable(line, submodule):
     return line.split("=")[0].strip().split()[-1] if "=" in line else line.split(";")[0].strip().split()[-1]
 
 
-def search_keywords(keywords: str):
-    """Searches keywords locally using grep.
-    """
+IGNORED_DIRECTORIES = frozenset({
+    ".git", ".github", ".venv", "node_modules", "__pycache__",
+    "test", "tests", "target", "build",
+})
 
-    repo_folder = tmp.tmp_config["Repository"]["local_path"]
 
-    results = dict()
+def source_files():
+    """Enumerate the supplied snapshot without platform-specific shell tools."""
+    root = Path(tmp.tmp_config["Repository"]["local_path"])
+    for directory, children, files in os.walk(root):
+        children[:] = sorted(name for name in children if name not in IGNORED_DIRECTORIES)
+        for name in sorted(files):
+            path = Path(directory) / name
+            if path.is_symlink():
+                raise ValueError("Source snapshot contains a symbolic link")
+            yield path
 
+
+def search_keywords(keywords):
+    """Keep legacy per-file results, with explicit read failures and relative exclusions."""
+    root = Path(tmp.tmp_config["Repository"]["local_path"])
     if isinstance(keywords, str):
         keywords = [keywords]
-
+    results = {}
     for keyword in keywords:
-        if keyword[-1] == "(":
-            keyword = "\"" + keyword + "\""
-        out = subprocess.Popen(['grep', '-rn', keyword, repo_folder], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        stdout, stderr = out.communicate()
-        seen = set()
-        for line in stdout.decode().splitlines():
-            if line.startswith("Binary file"):
+        try:
+            expression = re.compile(keyword)
+        except re.error:
+            expression = re.compile(re.escape(keyword))
+        for path in source_files():
+            if path.suffix == ".md":
                 continue
-            line_parts = line.split(":")
-            if len(line_parts) < 3:
+            try:
+                content = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            except UnicodeDecodeError:
                 continue
-            full_path = line_parts[0]
-            if full_path not in seen:
-                seen.add(full_path)
-                if not "test" in full_path and len(full_path) >= 3 and not os.path.splitext(full_path)[1] == ".md":
-                    path = os.path.relpath(full_path, start=repo_folder)
-                    name = os.path.basename(path)
-                    line_nr = line_parts[1]
-                    code_line = ":".join(line_parts[2:])
-                    try:
-                        match = re.search(keyword, code_line)
-                    except Exception as e:
-                        logger.info(f"Error in regex matching for regex keyword {keyword}: {e}")
-                        match = None
-                    if match is None:
-                        continue
-                    span = match.span()
-                    try:
-                        with open(full_path) as file:
-                            content = file.readlines()
-                    except:
-                        content = False
-
-                    if content:
-                        id_ = max(results.keys(), default=-1) + 1
-                        results[id_] = dict()
-                        results[id_]["content"] = content
-                        results[id_]["name"] = name
-                        results[id_]["path"] = path
-                        results[id_]["line_nr"] = line_nr
-                        results[id_]["span"] = str(span)
+            for number, line in enumerate(content, 1):
+                match = expression.search(line)
+                if match:
+                    results[len(results)] = {
+                        "content": content, "name": path.name,
+                        "path": path.relative_to(root).as_posix(),
+                        "line_nr": str(number), "span": str(match.span()),
+                    }
+                    break
     return results
 
 
@@ -202,6 +194,8 @@ def detect_microservice(file_path, dfd):
     if count == 1:
         return microservice
     else:
+        if tmp.tmp_config.getboolean("Analysis Settings", "headless", fallback=False):
+            raise ValueError("Ambiguous service ownership in headless analysis")
         print("\tFound " + str(count) + " microservices for file " + str(file_path) +". \
         \n\tPlease choose microservice that the file belongs to: ")
         i = 1
@@ -283,47 +277,28 @@ def find_instances(class_of_interest: str) -> set:
     return instances
 
 
-def resolve_url(url: str, microservice: str, dfd) -> str:
-    """Tries to resolve a url into one of the microserices.
-    """
-
-    microservices = tech_sw.get_microservices(dfd)
-    target_service = False
-
-    if "http" in url:
-        if "localhost" in url:
-            url_parts = url.split("/")
-            for url_part in url_parts:
-                port = False
-                try:
-                    port = url_part.split(":")[1]
-                except:
-                    pass
-                if port:
-                    for m in microservices.keys():
-                        for prop in microservices[m]["tagged_values"]:
-                            if prop[0] == "Port":
-                                if port == prop[1]:
-                                    target_service = microservices[m]["name"]
-        else:
-            for m in microservices.keys():
-                url_parts = url.split("/")
-                for url_part in url_parts:
-                    if microservices[m]["name"] in url_part.split(":")[0]:
-                        target_service = microservices[m]["name"]
-    elif url[0] == "$":  # is environment variable
-        if microservice:
-            for m in microservices.keys():
-                if microservices[m]["name"] == microservice:
-                    try:
-                        if "Spring Config" in microservices[m]["properties"]:
-                            for mi in microservices.keys():
-                                if ("Configuration Server", "Spring Cloud Config") in microservices[mi]["tagged_values"]:
-                                    pass
-                    except Exception as e:
-                        pass
-
-    return target_service
+def resolve_url(url, microservice, dfd):
+    """Resolve literal local destinations exactly; never match host substrings."""
+    if not isinstance(url, str) or any(token in url for token in ("$", "{", "}")):
+        return False
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    matches = []
+    for service in tech_sw.get_microservices(dfd).values():
+        name = service["name"]
+        if host and name.removeprefix("pom_").casefold() == host.casefold():
+            matches.append(name)
+        elif host in ("localhost", "127.0.0.1", "::1") and port is not None:
+            if any(tag[0] == "Port" and str(tag[1]) == str(port)
+                   for tag in service.get("tagged_values", ())):
+                matches.append(name)
+    return matches[0] if len(set(matches)) == 1 else False
 
 
 def check_dockerfile(build_path: str):
@@ -408,52 +383,19 @@ def get_repo_contents_local(path: str) -> set:
     return repo
 
 
-def get_file_as_yaml(filename: str) -> dict:
-    """Looks for a file in the repository and downloads it if existing.
-    """
-
-    files = dict()
-
-    local_path = tmp.tmp_config["Repository"]["local_path"]
-    out = subprocess.Popen(['find', local_path, '-name', filename], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    stdout, stderr = out.communicate()
-
-    if stdout:
-        for line in stdout.decode().splitlines():
-            if os.path.isfile(line):
-                id_ = max(files.keys(), default=-1) + 1
-                files[id_] = dict()
-                with open(line, 'r') as file:
-                    files[id_]["content"] = file.read()
-
-                files[id_]["path"] = os.path.relpath(line, start=local_path)
-
-    return files
+def get_file_as_yaml(filename):
+    root = Path(tmp.tmp_config["Repository"]["local_path"])
+    return {
+        index: {"content": path.read_text(encoding="utf-8"),
+                "path": path.relative_to(root).as_posix()}
+        for index, path in enumerate(p for p in source_files() if p.name == filename)
+    }
 
 
-def get_file_as_lines(filename: str) -> dict:
-    """Looks for a file in the repository and downloads it if existing.
-    """
-
-    files = dict()
-
-    local_path = tmp.tmp_config["Repository"]["local_path"]
-    out = subprocess.Popen(['find', local_path, '-name', filename], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    stdout, stderr = out.communicate()
-
-    if stdout:
-        for line in stdout.decode().splitlines():
-            try:
-                id_ = max(files.keys()) + 1
-            except:
-                id_ = 0
-            files[id_] = dict()
-
-            with open(line, 'r') as file:
-                files[id_]["content"] = file.readlines()
-
-            files[id_]["name"] = os.path.basename(line)
-
-            files[id_]["path"] = os.path.relpath(line, start=local_path)
-
-    return files
+def get_file_as_lines(filename):
+    root = Path(tmp.tmp_config["Repository"]["local_path"])
+    return {
+        index: {"content": path.read_text(encoding="utf-8").splitlines(keepends=True),
+                "name": path.name, "path": path.relative_to(root).as_posix()}
+        for index, path in enumerate(p for p in source_files() if p.name == filename)
+    }

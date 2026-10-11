@@ -1,0 +1,12 @@
+[project]
+name = "code2dfd-headless"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "lxml==6.0.2",
+    "PyYAML==6.0.3",
+    "ruamel.yaml==0.18.16",
+]
+
+[tool.uv]
+package = false
