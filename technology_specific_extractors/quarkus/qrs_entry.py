@@ -16,7 +16,10 @@ REGISTER = re.compile(
     r'@(?:org\.eclipse\.microprofile\.rest\.client\.inject\.)?RegisterRestClient'
     r'\b(?:\s*\(([^)]*)\))?'
 )
-JAVA_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/', re.S)
+JAVA_TOKEN = re.compile(
+    r'"""(?:\\.|(?!""").)*"""|"(?:\\.|[^"\\])*"'
+    r'|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/', re.S
+)
 
 
 def uncomment(text):
@@ -57,11 +60,15 @@ def extract(root, nodes):
             continue
         relative = path.relative_to(root)
         text = uncomment(path.read_text(encoding='utf-8'))
-        registrations = list(REGISTER.finditer(text))
+        # Keep annotation values in text, but use lexical positions to reject
+        # declarations/imports/type names embedded in strings and text blocks.
+        code = JAVA_TOKEN.sub(lambda match: re.sub(r'[^\n]', ' ', match[0]), text)
+        registrations = [match for match in REGISTER.finditer(text)
+                         if code[match.start()] == '@']
         if not registrations:
             continue
-        if ('import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;' not in text
-                and '@org.eclipse.microprofile.rest.client.inject.RegisterRestClient' not in text):
+        if ('import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;' not in code
+                and '@org.eclipse.microprofile.rest.client.inject.RegisterRestClient' not in code):
             continue
         owners = [p for p in roots if relative.is_relative_to(p)]
         if not owners:
@@ -81,12 +88,13 @@ def extract(root, nodes):
             attributes = registration[1] or ''
             declaration = re.match(r'\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*'
                                    r'(?:public\s+)?interface\s+(\w+)',
-                                   text[registration.end():])
+                                   code[registration.end():])
             unsupported = len(registrations) != 1 or declaration is None
-            package = re.search(r'\bpackage\s+([\w.]+)\s*;', text)
+            package = re.search(r'\bpackage\s+([\w.]+)\s*;', code)
             interface = declaration[1] if declaration else ''
             fqn = (package[1] + '.' if package else '') + interface
-            key_match = re.search(r'\bconfigKey\s*=\s*("(?:\\.|[^"\\])*")', attributes)
+            key_match = re.search(r'\bconfigKey\s*=\s*("(?:\\.|[^"\\])*")\s*(?=,|$)',
+                                  attributes)
             key = json.loads(key_match[1]) if key_match else fqn
             if 'configKey' in attributes and key_match is None:
                 unsupported = True
@@ -96,7 +104,8 @@ def extract(root, nodes):
             if any(k in profiled for k in keys):
                 unsupported = True
             if not candidates:
-                base = re.search(r'\bbaseUri\s*=\s*("(?:\\.|[^"\\])*")', attributes)
+                base = re.search(r'\bbaseUri\s*=\s*("(?:\\.|[^"\\])*")\s*(?=,|$)',
+                                 attributes)
                 if base:
                     candidates.add(json.loads(base[1]))
             receiver = None

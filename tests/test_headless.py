@@ -73,6 +73,9 @@ class HeadlessTests(unittest.TestCase):
             ('peer/mp-rest/url=http://provider\n', 'configKey="peer"', 'provider'),
             ('quarkus.rest-client."example.Peer".uri=http://provider\n', '', 'provider'),
             ('', 'baseUri="http://provider"', 'provider'),
+            ('', 'baseUri="http://provider" + SUFFIX', None),
+            ('quarkus.rest-client.peer.url=http://provider\n',
+             'configKey="peer" + SUFFIX', None),
             ('quarkus.rest-client.peer.url=http://outside\n',
              'configKey="peer", baseUri="http://provider"', None),
             ('quarkus.rest-client.peer.url=${PEER_URL}\n', 'configKey="peer"', None),
@@ -94,6 +97,26 @@ class HeadlessTests(unittest.TestCase):
                 self.assertEqual(flows[0]['receiver'], expected)
                 if expected is None:
                     self.assertTrue(any(c['file'].endswith('Peer.java') for c in result['coverage']))
+
+    def test_annotations_inside_java_examples_do_not_create_quarkus_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            consumer = service(root, 'consumer')
+            service(root, 'provider')
+            (consumer / 'src/main/java/Example.java').write_text(
+                'package example;\n'
+                'import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;\n'
+                'public class Example {\n'
+                'String example = """\n'
+                '@RegisterRestClient(baseUri="http://provider")\n'
+                'public interface Fake {}\n'
+                '""";\n'
+                '// @RegisterRestClient(baseUri="http://provider") interface Comment {}\n'
+                '}\n'
+            )
+            result = analyze(root)
+            self.assertFalse(any('quarkus_rest_client' in f['stereotypes']
+                                 for f in result['flows']))
 
     def test_feign_placeholder_does_not_crash_and_exports_no_config_secrets(self):
         with tempfile.TemporaryDirectory() as temporary:
