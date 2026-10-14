@@ -72,7 +72,15 @@ def set_information_flows(dfd) -> dict:
                         if microservices[m]["name"].casefold() == target_service.casefold():
                             for s in microservices[m]["stereotype_instances"]:
                                 if s == "authentication_scope_all_requests":
-                                    stereotype_instances.add("authenticated_request")
+                                    stereotype_instances.append("authenticated_request")
+                if microservice and not target_service:
+                    traceability.unresolved_http.append({
+                        'sender': microservice, 'receiver': None,
+                        'stereotypes': ['restful_http', 'feign_connection'],
+                        'file': results[id]['path'], 'line': results[id]['line_nr'],
+                        'span': str(results[id]['span']),
+                        'destination_kind': 'unknown',
+                        'resolution_detail': 'Feign destination is unresolved by the engine.'})
                 if target_service and microservice:
                     # set flow
                     try:
