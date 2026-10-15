@@ -104,3 +104,23 @@ The fork also isolates optional legacy rendering/Git dependencies, replaces shel
 searches with portable snapshot traversal, fixes Feign attribute parsing and exact
 URL-host matching, and pins the headless Python dependencies in `uv.lock`.
 Original papers, authors and Apache-2.0 attribution remain applicable.
+
+### Parallel-flow integrity (headless protocol 2)
+
+Parallel relationships retain every distinct relative file/line/span witness.
+`relationship_id` and each location's `evidence_id` are SHA-256 identities over
+canonical sanitized JSON; they identify records, not invocation or authenticity.
+`origin` distinguishes upstream extraction, Quarkus declarations, and supplied
+bindings. `metadata_scope` keeps upstream merged labels at relationship scope;
+Quarkus and supplied bindings describe declarations. `file`/`line` identify the
+first canonical witness; `locations` retains the complete collection. Unknown
+parser line conventions remain line 0. Feign candidates without a resolved
+destination are retained with explicit coverage and no guessed receiver.
+
+The binding input remains protocol 1; the headless response is protocol 2.
+URLs, configuration values and tagged-value contents are not exported. Unsupported
+metadata shapes fail explicitly; null metadata remains unknown, including when
+merged with known annotations. Legacy trace records keep their primary fields and
+add `locations`; repeated traces and reversals preserve annotation subtraces.
+
+Run the real source-only suite with `uv run --locked python -m unittest discover -s tests -v`.

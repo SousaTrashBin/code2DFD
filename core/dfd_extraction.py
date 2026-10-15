@@ -1,6 +1,5 @@
 import ast
 from datetime import datetime
-from itertools import combinations
 import os
 
 import output_generators.codeable_model as codeable_model
@@ -400,67 +399,72 @@ def detect_miscellaneous(microservices: dict, information_flows: dict, external_
     return microservices, information_flows, external_components
 
 
+def annotation_values(field, value):
+    """Normalize collection containers without treating unknowns as empty facts."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError(f"Unsupported {field} metadata type: {type(value).__name__}")
+    values = list(value)
+    if field == "stereotype_instances":
+        if any(not isinstance(item, str) for item in values):
+            raise ValueError("Unsupported stereotype_instances member type")
+    elif field == "tagged_values":
+        if any(not isinstance(item, (tuple, list)) or len(item) != 2
+               or not isinstance(item[0], str) for item in values):
+            raise ValueError("Unsupported tagged_values member shape")
+    return sorted(values, key=repr) if isinstance(value, set) else values
+
+
+def merge_items(collection, identity_fields, owner_fields=()):
+    survivors = {}
+    for key, item in list(collection.items()):
+        for field in ("stereotype_instances", "tagged_values", "properties"):
+            if field in item:
+                item[field] = annotation_values(field, item[field])
+        identity = tuple(item[field].casefold() if item[field] else None
+                         for field in identity_fields)
+        if None in identity:
+            del collection[key]
+            continue
+        for field, value in zip(identity_fields, identity, strict=True):
+            item[field] = value
+        # Same display names in different build roots do not identify one service.
+        identity += tuple(item.get(field) for field in owner_fields)
+        if identity not in survivors:
+            survivors[identity] = item
+            continue
+        survivor = survivors[identity]
+        for field, value in item.items():
+            if field in identity_fields:
+                continue
+            if field not in survivor:
+                survivor[field] = value
+            elif field in ("stereotype_instances", "tagged_values", "properties"):
+                previous = survivor[field]
+                if previous is None or value is None:
+                    unknown = survivor.setdefault("unknown_metadata", [])
+                    if field not in unknown:
+                        unknown.append(field)
+                if previous is not None or value is not None:
+                    survivor[field] = (previous or []) + (value or [])
+                else:
+                    survivor[field] = None
+            elif field == "unknown_metadata":
+                survivor[field] = sorted(set(survivor[field]) | set(value))
+            elif survivor[field] != value:
+                raise ValueError(f"Conflicting duplicate metadata type: {type(value).__name__}")
+        del collection[key]
+
+
 def merge_duplicate_flows(information_flows: dict):
-    """Multiple flows with the same sender and receiver might occur. They are merged here.
-    """
-
-    to_delete = set()
-    for i, j in combinations(information_flows.keys(), 2):
-        flow_i = information_flows[i]
-        if flow_i["sender"] and flow_i["receiver"]:
-            flow_i["sender"] = flow_i["sender"].casefold()
-            flow_i["receiver"] = flow_i["receiver"].casefold()
-        else:
-            to_delete.add(i)
-            continue
-        if i == j:
-            continue
-        flow_j = information_flows[j]
-        if flow_j["sender"] and flow_j["receiver"]:
-            flow_j["sender"] = flow_j["sender"].casefold()
-            flow_j["receiver"] = flow_j["receiver"].casefold()
-        else:
-            to_delete.add(j)
-            continue
-
-        if flow_i["sender"] == flow_j["sender"] and flow_i["receiver"] == flow_j["receiver"]:
-            # merge
-            for field, j_value in flow_j.items():
-                if field not in ["sender", "receiver"]:
-                    try:
-                        flow_i[field] = flow_i.get(field, list()) + list(j_value)
-                    except:
-                        flow_i[field] = list(j_value).append(flow_i.get(field, list()))
-            to_delete.add(j)
-    for k in to_delete:
-        del information_flows[k]
+    """Merge each duplicate flow into one survivor exactly once."""
+    merge_items(information_flows, ("sender", "receiver"))
 
 
 def merge_duplicate_nodes(nodes: dict):
-    """Merge duplicate nodes
-    """
-
-    # Microservices
-    to_delete = set()
-    for i, j in combinations(nodes.keys(), 2):
-        node_i = nodes[i]
-        node_i["name"] = node_i["name"].casefold()
-        if i == j:
-            continue
-        node_j = nodes[j]
-        node_j["name"] = node_j["name"].casefold()
-
-        if node_i["name"] == node_j["name"]:
-            # merge
-            for field, j_value in node_j.items():
-                if field not in ["name", "type"]:
-                    try:
-                        node_i[field] = node_i.get(field, list()) + list(j_value)
-                    except:
-                        node_i[field] = list(j_value).append(node_i.get(field, list()))
-            to_delete.add(j)
-    for k in to_delete:
-        del nodes[k]
+    """Preserve scalar identity fields and normalize collection metadata."""
+    merge_items(nodes, ("name",), ("pom_path", "gradle_path"))
 
 
 def merge_duplicate_annotations(collection: dict):
@@ -468,10 +472,10 @@ def merge_duplicate_annotations(collection: dict):
     """
 
     for item in collection.values():
-        if "stereotype_instances" in item:
-            item["stereotype_instances"] = list(set(item["stereotype_instances"]))
+        if item.get("stereotype_instances") is not None:
+            item["stereotype_instances"] = sorted(set(item["stereotype_instances"]))
 
-        if "tagged_values" in item:
+        if item.get("tagged_values") is not None:
             tagged_values_set = set()
             for tag, tagged_value in item["tagged_values"]:
                 if tag == "Port":
@@ -485,4 +489,4 @@ def merge_duplicate_annotations(collection: dict):
                 elif isinstance(tagged_value, list):
                     tagged_value = str(tagged_value)
                 tagged_values_set.add((tag, tagged_value))
-            item["tagged_values"] = list(tagged_values_set)
+            item["tagged_values"] = sorted(tagged_values_set, key=repr)

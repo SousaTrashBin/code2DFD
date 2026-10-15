@@ -8,6 +8,7 @@ properties and tagged-value contents are deliberately omitted.
 import argparse
 import contextlib
 import io
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -44,6 +45,44 @@ def location(trace, root):
     else:
         return None, None
     return path.as_posix(), line
+
+
+def evidence_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def flow_evidence(flow, root):
+    """IDs identify sanitized records; they do not establish invocation or trust."""
+    flow = dict(flow)
+    flow['stereotypes'] = sorted(set(flow['stereotypes']))
+    origin = flow.setdefault('origin', 'upstream')
+    scope = flow.setdefault('metadata_scope', 'relationship')
+    traces = flow.pop('_traces', None)
+    if traces is None:
+        traces = [flow] if flow.get('file') is not None else []
+    witnesses = []
+    for trace in traces:
+        file, line = location(trace, root)
+        # Quarkus and shared bindings already use one-based integer lines.
+        if origin != 'upstream':
+            file, line = trace.get('file'), trace.get('line')
+        if file is None:
+            continue
+        span = re.fullmatch(r'\((\d+),\s*(\d+)\)', str(trace.get('span')))
+        span = [int(span[1]), int(span[2])] if span else None
+        witness = {'file': file, 'line': line or 0, 'span': span}
+        if witness not in witnesses:
+            witnesses.append(witness)
+    witnesses.sort(key=lambda row: (row['file'], row['line'], row['span'] or [-1, -1]))
+    flow['file'] = witnesses[0]['file'] if witnesses else None
+    flow['line'] = witnesses[0]['line'] if witnesses else 0
+    flow.pop('span', None)
+    identity = evidence_digest([flow['sender'], flow['receiver'], flow['stereotypes'],
+                                origin, scope, witnesses])
+    flow['relationship_id'] = identity
+    flow['locations'] = [{**row, 'evidence_id': evidence_digest([identity, row])}
+                         for row in witnesses]
+    return flow
 
 
 def apply_bindings(root, nodes, flows, coverage, evidence):
@@ -124,6 +163,7 @@ def apply_bindings(root, nodes, flows, coverage, evidence):
             raise ValueError('External or unknown binding must not name an internal destination')
         flows.append({'sender': owners[source][0], 'receiver': receiver,
                       'stereotypes': ['restful_http', 'maze_annotated_http_client'],
+                      'origin': 'supplied_binding', 'metadata_scope': 'declaration',
                       'file': file, 'line': line, 'destination_kind': status,
                       'resolution_detail': detail})
         if status != 'internal':
@@ -138,6 +178,7 @@ def analyze(root, evidence=None):
     root = root.resolve()
     tmp.tmp_config.clear()
     traceability.traceability = {'nodes': {}, 'edges': {}}
+    traceability.unresolved_http = []
     for section in ('Repository', 'Technology Profiles', 'Analysis Settings', 'DFD'):
         tmp.tmp_config.add_section(section)
     tmp.tmp_config.set('Repository', 'local_path', str(root))
@@ -154,18 +195,31 @@ def analyze(root, evidence=None):
             trace = traceability.traceability['nodes'].get(name.removeprefix('pom_'))
         file, line = location(trace, root)
         nodes.append({'name': name, 'root': str(Path(marker).parent) if marker else None,
-                      'stereotypes': sorted(set(raw.get('stereotype_instances', ()))),
+                      'stereotypes': sorted(set(raw.get('stereotype_instances') or ())),
                       'file': file, 'line': line})
     result_flows = []
+    metadata_coverage = []
     for raw in (flows or {}).values():
         sender, receiver = raw['sender'], raw['receiver']
         trace = traceability.traceability['edges'].get(f'{sender} -> {receiver}')
         file, line = location(trace, root)
         result_flows.append({'sender': sender, 'receiver': receiver,
-                             'stereotypes': sorted(set(raw.get('stereotype_instances', ()))),
+                             '_traces': trace.get('locations', []) if trace else [],
+                             'stereotypes': sorted(set(raw.get('stereotype_instances') or ())),
                              'file': file, 'line': line})
+        if raw.get('unknown_metadata') or any(
+                field in raw and raw[field] is None
+                for field in ('stereotype_instances', 'tagged_values', 'properties')):
+            metadata_coverage.append({'file': file or '.', 'line': line or 0,
+                                      'detail': 'Merged relationship contains unknown metadata; labels are incomplete.'})
+    for candidate in traceability.unresolved_http:
+        file, line = location(candidate, root)
+        result_flows.append({**candidate, 'file': file, 'line': line,
+                             '_traces': [candidate]})
     quarkus_flows, coverage = extract_quarkus(root, nodes)
-    result_flows.extend(quarkus_flows)
+    coverage.extend(metadata_coverage)
+    result_flows.extend({**flow, 'origin': 'quarkus', 'metadata_scope': 'declaration'}
+                        for flow in quarkus_flows)
     if evidence is not None:
         apply_bindings(root, nodes, result_flows, coverage, evidence)
     coverage.insert(0, {'file': '.', 'line': 0,
@@ -173,8 +227,18 @@ def analyze(root, evidence=None):
                                  'Reachability, profiles, serializers and complete framework '
                                  'coverage are not established; Quarkus clients require '
                                  'literal annotations and application.properties bindings.'})
-    return {'schema_version': 1, 'engine': 'code2dfd', 'nodes': nodes,
-            'flows': result_flows, 'coverage': coverage,
+    result_flows = [flow_evidence(flow, root) for flow in result_flows]
+    result_flows.sort(key=lambda flow: flow['relationship_id'])
+    nodes.sort(key=lambda node: (node['name'], node['root'] or ''))
+    for flow in result_flows:
+        if flow['receiver'] is None:
+            for witness in flow['locations']:
+                if witness['file'] is not None:
+                    coverage.append({'file': witness['file'], 'line': witness['line'],
+                                     'detail': flow.get('resolution_detail') or 'Engine destination is unresolved.'})
+    coverage = sorted({json.dumps(row, sort_keys=True) for row in coverage})
+    return {'schema_version': 2, 'engine': 'code2dfd', 'nodes': nodes,
+            'flows': result_flows, 'coverage': [json.loads(row) for row in coverage],
             'context_fingerprint': evidence['context_fingerprint'] if evidence is not None else None}
 
 
