@@ -1,4 +1,5 @@
 *.pyc
+.venv/
 *.DS_Store
 .vscode/
 analysed_repositories/

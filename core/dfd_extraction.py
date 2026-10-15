@@ -3,15 +3,12 @@ from datetime import datetime
 from itertools import combinations
 import os
 
-from pydriller import Repository
-
 import output_generators.codeable_model as codeable_model
 import core.technology_switch as tech_sw
 import tmp.tmp as tmp
 import output_generators.json_architecture as json_architecture
 import output_generators.json_edges as json_edges
 import output_generators.traceability as traceability
-import output_generators.visualizer as visualizer
 import output_generators.plaintext as plaintext
 from technology_specific_extractors.apache_httpd.aph_entry import detect_apachehttpd_webserver
 from technology_specific_extractors.circuit_breaker.cbr_entry import detect_circuit_breakers
@@ -55,6 +52,8 @@ def perform_analysis():
     """
     Entrypoint for the DFD extraction that initializes the repository
     """
+    from pydriller import Repository
+
     local_path = tmp.tmp_config.get("Repository", "local_path")
     url_path = tmp.tmp_config.get("Repository", "url")
 
@@ -79,7 +78,7 @@ def perform_analysis():
     return codeable_models, traceability_content
 
 
-def DFD_extraction():
+def DFD_extraction(write_outputs=True):
     """Main function for the extraction, calling all technology-specific extractors, managing output etc.
     """
     dfd = CDFD("TestDFD")
@@ -149,6 +148,11 @@ def DFD_extraction():
     tmp.tmp_config.set("DFD", "microservices", str(microservices).replace("%", "%%"))
     tmp.tmp_config.set("DFD", "information_flows", str(information_flows).replace("%", "%%"))
     tmp.tmp_config.set("DFD", "external_components", str(external_components).replace("%", "%%"))
+
+    if not write_outputs:
+        return microservices, information_flows, external_components
+
+    import output_generators.visualizer as visualizer
 
     plaintext.write_plaintext(microservices, information_flows, external_components)
     codeable_models, codeable_models_path = codeable_model.output_codeable_model(microservices, information_flows, external_components)
