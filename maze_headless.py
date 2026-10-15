@@ -106,15 +106,9 @@ def apply_bindings(root, nodes, flows, coverage, evidence):
                 or not (root / relative).is_dir()):
             raise ValueError('Invalid selected service root')
         selected.add(relative)
-    selected_nodes = {name for relative in selected for name in owners.get(relative, [])}
-    # Default URL heuristics cannot override an explicitly selected deployment.
-    flows[:] = [f for f in flows if not (
-        f['sender'] in selected_nodes and 'restful_http' in f['stereotypes']
-        and not any('message_' in label or 'database' in label or label == 'jdbc'
-                    for label in f['stereotypes']))]
-    coverage[:] = [c for c in coverage if c['file'] == '.' or not any(
-        Path(c['file']).is_relative_to(Path(p)) for p in selected)]
     seen = set()
+    replaced_sites = []
+    binding_coverage = []
     for row in evidence['bindings']:
         if not isinstance(row, dict) or set(row) != {
             'source_root', 'destination_root', 'file', 'line', 'destination_kind', 'resolution_detail'}:
@@ -146,9 +140,10 @@ def apply_bindings(root, nodes, flows, coverage, evidence):
                 r'@(?:[\w$]+\.)*(?:RegisterRestClient|FeignClient)\b', declaration['annotations']):
             raise ValueError('Binding does not identify an annotated source declaration')
         seen.add((file, line))
+        replaced_sites.append((file, line, line + declaration[0].count('\n')))
         if len(owners.get(source, [])) != 1:
-            coverage.append({'file': file, 'line': line,
-                             'detail': 'Explicit client source has no unique recovered engine node.'})
+            binding_coverage.append({'file': file, 'line': line,
+                                     'detail': 'Explicit client source has no unique recovered engine node.'})
             continue
         receiver = None
         if status == 'internal':
@@ -167,10 +162,37 @@ def apply_bindings(root, nodes, flows, coverage, evidence):
                       'file': file, 'line': line, 'destination_kind': status,
                       'resolution_detail': detail})
         if status != 'internal':
-            coverage.append({'file': file, 'line': line, 'detail': detail})
+            binding_coverage.append({'file': file, 'line': line, 'detail': detail})
+
+    def replaced(file, line):
+        return any(file == source and type(line) is int and first <= line <= last
+                   for source, first, last in replaced_sites)
+
+    retained = []
+    for flow in flows:
+        if (flow.get('origin') == 'supplied_binding' or 'restful_http' not in flow['stereotypes']
+                or any('message_' in label or 'database' in label or label == 'jdbc'
+                       for label in flow['stereotypes'])):
+            retained.append(flow)
+            continue
+        traces = flow.get('_traces', [flow] if flow.get('file') is not None else [])
+        remaining = []
+        for trace in traces:
+            if flow.get('origin', 'upstream') == 'upstream':
+                file, line = location(trace, root)
+            else:
+                file, line = trace.get('file'), trace.get('line')
+            if not replaced(file, line):
+                remaining.append(trace)
+        if remaining or not traces:
+            # Aggregate labels remain relationship metadata after removing a witness.
+            retained.append({**flow, '_traces': remaining})
+    flows[:] = retained
+    coverage[:] = [c for c in coverage if not replaced(c['file'], c['line'])]
+    coverage.extend(binding_coverage)
     coverage.append({'file': '.', 'line': 0, 'detail':
-        'Explicit deployment bindings replace selected services\' default HTTP heuristics. '
-        'Other HTTP mechanisms in those services are not recovered by this binding adapter; '
+        'Explicit deployment bindings replace matching annotated-client source witnesses. '
+        'Independent HTTP source witnesses retain their heuristic relationship metadata; '
         'client declarations do not establish invocation reachability.'})
 
 

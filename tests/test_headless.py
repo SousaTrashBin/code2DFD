@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from maze_headless import analyze
-from maze_headless import apply_bindings
+from maze_headless import apply_bindings, flow_evidence
 
 
 def service(root, name, framework='quarkus'):
@@ -37,6 +37,69 @@ def client(directory, attributes='configKey="peer"'):
 
 
 class HeadlessTests(unittest.TestCase):
+    def test_selected_bindings_preserve_independent_programmatic_http(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            consumer = service(root, 'consumer', 'spring')
+            service(root, 'provider', 'spring')
+            (consumer / 'src/main/java/Peer.java').write_text(
+                'package example;\nimport org.springframework.cloud.openfeign.FeignClient;\n'
+                '@FeignClient(name="provider")\npublic interface Peer {}\n')
+            (consumer / 'src/main/java/Caller.java').write_text(
+                'package example;\nimport org.springframework.web.client.RestTemplate;\n'
+                'class Caller { RestTemplate restTemplate;\n'
+                'String call() { return restTemplate.getForObject("http://provider" + "/api/items", String.class); } }\n')
+            evidence = {'schema_version': 1, 'context_fingerprint': 'a' * 64,
+                        'service_roots': ['consumer', 'provider'], 'bindings': [{
+                            'source_root': 'consumer', 'destination_root': None,
+                            'file': 'consumer/src/main/java/Peer.java', 'line': 3,
+                            'destination_kind': 'external', 'resolution_detail': 'Selected external binding.'}]}
+            result = analyze(root, evidence)
+            independent = [f for f in result['flows'] if f['origin'] == 'upstream'
+                           and f['sender'] == 'consumer' and f['receiver'] == 'provider']
+            self.assertEqual(len(independent), 1)
+            self.assertEqual(independent[0]['metadata_scope'], 'relationship')
+            self.assertEqual([w['file'] for w in independent[0]['locations']],
+                             ['consumer/src/main/java/Caller.java'])
+            supplied = [f for f in result['flows'] if f['origin'] == 'supplied_binding']
+            self.assertEqual(len(supplied), 1)
+            self.assertIsNone(supplied[0]['receiver'])
+
+    def test_binding_replacement_preserves_mixed_relationship_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            consumer = service(root, 'consumer', 'spring')
+            service(root, 'provider', 'spring')
+            peer = consumer / 'src/main/java/Peer.java'
+            peer.write_text('package example;\n@FeignClient(name="provider")\ninterface Peer {}\n')
+            caller = consumer / 'src/main/java/Caller.java'
+            caller.write_text('class Caller {\n void call() {}\n}\n')
+            flows = [{'sender': 'consumer', 'receiver': 'provider',
+                      'stereotypes': ['restful_http', 'feign_connection'],
+                      'origin': 'upstream', 'metadata_scope': 'relationship',
+                      'file': 'consumer/src/main/java/Peer.java', 'line': '2',
+                      '_traces': [{'file': 'consumer/src/main/java/Peer.java', 'line': '2'},
+                                  {'file': 'consumer/src/main/java/Caller.java', 'line': '2'}]}]
+            coverage = [{'file': 'consumer/src/main/java/Caller.java', 'line': 2,
+                         'detail': 'Independent programmatic limitation.'}]
+            evidence = {'schema_version': 1, 'context_fingerprint': 'a' * 64,
+                        'service_roots': ['consumer', 'provider'], 'bindings': [{
+                            'source_root': 'consumer', 'destination_root': 'provider',
+                            'file': 'consumer/src/main/java/Peer.java', 'line': 2,
+                            'destination_kind': 'internal', 'resolution_detail': 'Selected binding.'}]}
+            apply_bindings(root, [{'root': name, 'name': name} for name in ('consumer', 'provider')],
+                           flows, coverage, evidence)
+            independent = flow_evidence(next(f for f in flows if f['origin'] == 'upstream'), root)
+            self.assertEqual(independent['metadata_scope'], 'relationship')
+            self.assertEqual(independent['stereotypes'], ['feign_connection', 'restful_http'])
+            self.assertEqual([w['file'] for w in independent['locations']],
+                             ['consumer/src/main/java/Caller.java'])
+            supplied = flow_evidence(next(f for f in flows if f['origin'] == 'supplied_binding'), root)
+            self.assertEqual(supplied['metadata_scope'], 'declaration')
+            self.assertNotIn('feign_connection', supplied['stereotypes'])
+            self.assertIn({'file': 'consumer/src/main/java/Caller.java', 'line': 2,
+                           'detail': 'Independent programmatic limitation.'}, coverage)
+
     def test_explicit_context_overrides_defaults_for_spring_and_quarkus(self):
         for framework in ('spring', 'quarkus'):
             with self.subTest(framework=framework), tempfile.TemporaryDirectory() as temporary:
