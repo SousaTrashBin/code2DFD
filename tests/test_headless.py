@@ -37,6 +37,17 @@ def client(directory, attributes='configKey="peer"'):
 
 
 class HeadlessTests(unittest.TestCase):
+    def test_location_scope_distinguishes_relationship_metadata_from_call_witnesses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / 'Dockerfile').write_text('FROM scratch\n')
+            for origin, expected in [('upstream', 'relationship'), ('quarkus', 'call'),
+                                     ('supplied_binding', 'call')]:
+                flow = flow_evidence({'sender': 'a', 'receiver': 'b',
+                                      'stereotypes': ['restful_http'], 'origin': origin,
+                                      'file': 'Dockerfile', 'line': '1' if origin == 'upstream' else 1}, root)
+                self.assertEqual(flow['locations'][0]['scope'], expected)
+
     def test_selected_bindings_preserve_independent_programmatic_http(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

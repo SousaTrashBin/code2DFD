@@ -51,7 +51,7 @@ def evidence_digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def flow_evidence(flow, root):
+def flow_evidence(flow, root, nodes=()):
     """IDs identify sanitized records; they do not establish invocation or trust."""
     flow = dict(flow)
     flow['stereotypes'] = sorted(set(flow['stereotypes']))
@@ -70,7 +70,14 @@ def flow_evidence(flow, root):
             continue
         span = re.fullmatch(r'\((\d+),\s*(\d+)\)', str(trace.get('span')))
         span = [int(span[1]), int(span[2])] if span else None
-        witness = {'file': file, 'line': line or 0, 'span': span}
+        owners = {node['root'] for node in nodes if node.get('root') is not None
+                  and (node['root'] == '.' or Path(node['root']) in Path(file).parents)}
+        owner = max(owners, key=lambda value: len(Path(value).parts)) if owners else None
+        sources = {node['root'] for node in nodes if node['name'] == flow['sender']}
+        call = origin != 'upstream' or (Path(file).suffix == '.java' and line
+                                       and sources == {owner} and owner is not None)
+        witness = {'file': file, 'line': line or 0, 'span': span,
+                   'scope': 'call' if call else 'relationship'}
         if witness not in witnesses:
             witnesses.append(witness)
     witnesses.sort(key=lambda row: (row['file'], row['line'], row['span'] or [-1, -1]))
@@ -249,7 +256,7 @@ def analyze(root, evidence=None):
                                  'Reachability, profiles, serializers and complete framework '
                                  'coverage are not established; Quarkus clients require '
                                  'literal annotations and application.properties bindings.'})
-    result_flows = [flow_evidence(flow, root) for flow in result_flows]
+    result_flows = [flow_evidence(flow, root, nodes) for flow in result_flows]
     result_flows.sort(key=lambda flow: flow['relationship_id'])
     nodes.sort(key=lambda node: (node['name'], node['root'] or ''))
     for flow in result_flows:
@@ -259,7 +266,7 @@ def analyze(root, evidence=None):
                     coverage.append({'file': witness['file'], 'line': witness['line'],
                                      'detail': flow.get('resolution_detail') or 'Engine destination is unresolved.'})
     coverage = sorted({json.dumps(row, sort_keys=True) for row in coverage})
-    return {'schema_version': 2, 'engine': 'code2dfd', 'nodes': nodes,
+    return {'schema_version': 3, 'engine': 'code2dfd', 'nodes': nodes,
             'flows': result_flows, 'coverage': [json.loads(row) for row in coverage],
             'context_fingerprint': evidence['context_fingerprint'] if evidence is not None else None}
 
