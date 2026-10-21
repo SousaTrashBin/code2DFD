@@ -98,7 +98,7 @@ class HeadlessWitnessTests(unittest.TestCase):
             before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in root.rglob('*') if p.is_file()}
             first = analyze(root)
-            self.assertEqual(first['schema_version'], 2)
+            self.assertEqual(first['schema_version'], 3)
             self.assertEqual(first, analyze(root))
             flows = [f for f in first['flows'] if 'restful_http' in f['stereotypes']]
             self.assertEqual(len(flows), 1)
